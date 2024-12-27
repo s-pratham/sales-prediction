@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # Import CORS to handle cross-origin requests
+from flask_cors import CORS
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -8,14 +8,16 @@ from datetime import datetime
 
 # Initialize Flask app
 app = Flask(__name__)
-
-# Enable CORS to allow requests from React frontend
 CORS(app)
 
 # Load data and preprocess
 try:
-    data = pd.read_csv('train.csv', low_memory=False, dtype={'item': int})  # Replace with your dataset's path
+    data = pd.read_csv('train.csv', low_memory=False, dtype={'item': 'Int64'})  # Support NA values in integers
     data['date'] = pd.to_datetime(data['date'], format='%m/%d/%Y')
+    data['sales'] = data['sales'].fillna(0)  # Replace missing sales with 0
+
+    # Drop rows with missing item or date
+    data = data.dropna(subset=['item', 'date'])
 
     # Initialize scaler
     scaler = MinMaxScaler()
@@ -44,48 +46,37 @@ def predict_monthly_sales(model, data, item, sequence_length=30, days_to_predict
         monthly_prediction = []
         current_input = sales
 
-        # Reshape to (1, sequence_length, 1) to match LSTM input format
         current_input = np.reshape(current_input, (1, sequence_length, 1))
 
         for _ in range(days_to_predict):
             next_day = model.predict(current_input)[0][0]
             monthly_prediction.append(next_day)
-
-            # Reshape next_day to 3D before appending
             next_day_reshaped = np.reshape(next_day, (1, 1, 1))
-
-            # Shift window and append next_day_reshaped
             current_input = np.append(current_input[:, 1:, :], next_day_reshaped, axis=1)
 
-        # Inverse transform the predictions
         monthly_prediction = scaler.inverse_transform(np.array(monthly_prediction).reshape(-1, 1))
         total_monthly_sales = monthly_prediction.sum()
         return total_monthly_sales
     except Exception as e:
         raise ValueError(f"Error predicting monthly sales: {e}")
 
-# Load trained model using TensorFlow's Keras API
+# Load trained model
 def load_trained_model(model_path):
     try:
-        # Explicitly load model with the correct loss function
-        custom_objects = {
-            'mse': tf.keras.losses.MeanSquaredError()  # Provide the MeanSquaredError function explicitly
-        }
+        custom_objects = {'mse': tf.keras.losses.MeanSquaredError()}
         model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
         return model
     except Exception as e:
         print(f"Error loading model: {e}")
         exit(1)
 
-# Load trained model
 model = load_trained_model('bilstm_model.h5')
 
-# API route for prediction
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
         req_data = request.get_json()
-        item = int(req_data['item'])  # Get item ID from request
+        item = int(req_data['item'])
         sequence_length = 30
         days_to_predict = 30
 
@@ -93,15 +84,12 @@ def predict():
             model, data, item, sequence_length=sequence_length, days_to_predict=days_to_predict
         )
 
-        response = {
-            'total_sales': float(total_sales)
-        }
+        response = {'total_sales': float(total_sales)}
         return jsonify(response)
     except ValueError as ve:
         return jsonify({'error': str(ve)}), 400
     except Exception as e:
-        return jsonify({'error': f"An unexpected error occurred: {e}"}), 500
+        return jsonify({'error': f"Unexpected error occurred: {e}"}), 500
 
-# Run Flask app
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=8080)
